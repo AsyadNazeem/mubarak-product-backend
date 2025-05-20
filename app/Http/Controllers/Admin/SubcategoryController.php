@@ -5,7 +5,8 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\SubCategory;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Validator;
 
 class SubcategoryController extends Controller
@@ -31,7 +32,6 @@ class SubcategoryController extends Controller
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
      */
-
     public function store(Request $request)
     {
         try {
@@ -46,6 +46,7 @@ class SubcategoryController extends Controller
                 'description' => 'required|string',
                 'status' => 'required|in:active,inactive',
                 'image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+                'custom_path' => 'nullable|string',
             ]);
 
             if ($validator->fails()) {
@@ -61,7 +62,31 @@ class SubcategoryController extends Controller
             if ($request->hasFile('image')) {
                 $image = $request->file('image');
                 $filename = time() . '_' . $image->getClientOriginalName();
-                $imagePath = $image->storeAs('subcategories', $filename, 'public');
+
+                // Use custom path if provided, otherwise use default path
+                $uploadPath = $request->custom_path ?? 'subcategories';
+
+                // Check if the path is absolute or relative
+                if (!\Illuminate\Support\Str::startsWith($uploadPath, '/')) {
+                    // If it's relative, make it relative to the base_path
+                    $fullPath = base_path($uploadPath);
+                } else {
+                    // If it's absolute, use it directly
+                    $fullPath = $uploadPath;
+                }
+
+                // Make sure the directory exists
+                if (!File::isDirectory($fullPath)) {
+                    File::makeDirectory($fullPath, 0755, true);
+                }
+
+                // Save the file to the specified path
+                $image->move($fullPath, $filename);
+
+                // Store the relative path in the database
+                $imagePath = $uploadPath . '/' . $filename;
+
+                \Log::info('Image saved to: ' . $imagePath . ' (Full path: ' . $fullPath . '/' . $filename . ')');
             }
 
             // Create new subcategory
@@ -82,6 +107,7 @@ class SubcategoryController extends Controller
 
         } catch (\Exception $e) {
             \Log::error('SubCategory creation error: ' . $e->getMessage());
+            \Log::error('Error trace: ' . $e->getTraceAsString());
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to create subcategory: ' . $e->getMessage(),
@@ -138,6 +164,7 @@ class SubcategoryController extends Controller
                 'description' => 'required|string',
                 'status' => 'required|in:active,inactive',
                 'image' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+                'custom_path' => 'nullable|string',
             ]);
 
             if ($validator->fails()) {
@@ -151,13 +178,35 @@ class SubcategoryController extends Controller
             // Handle image upload if present
             if ($request->hasFile('image')) {
                 // Delete old image if exists
-                if ($subCategory->image_path) {
-                    Storage::disk('public')->delete($subCategory->image_path);
+                if ($subCategory->image_path && file_exists(base_path($subCategory->image_path))) {
+                    File::delete(base_path($subCategory->image_path));
                 }
 
                 $image = $request->file('image');
                 $filename = time() . '_' . $image->getClientOriginalName();
-                $imagePath = $image->storeAs('subcategories', $filename, 'public');
+
+                // Use custom path if provided, otherwise use default path
+                $uploadPath = $request->custom_path ?? 'subcategories';
+
+                // Check if the path is absolute or relative
+                if (!\Illuminate\Support\Str::startsWith($uploadPath, '/')) {
+                    // If it's relative, make it relative to the base_path
+                    $fullPath = base_path($uploadPath);
+                } else {
+                    // If it's absolute, use it directly
+                    $fullPath = $uploadPath;
+                }
+
+                // Make sure the directory exists
+                if (!File::isDirectory($fullPath)) {
+                    File::makeDirectory($fullPath, 0755, true);
+                }
+
+                // Save the file to the specified path
+                $image->move($fullPath, $filename);
+
+                // Store the relative path in the database
+                $imagePath = $uploadPath . '/' . $filename;
 
                 $subCategory->image_path = $imagePath;
             }
@@ -198,8 +247,8 @@ class SubcategoryController extends Controller
                 ->firstOrFail();
 
             // Delete image if exists
-            if ($subCategory->image_path) {
-                Storage::disk('public')->delete($subCategory->image_path);
+            if ($subCategory->image_path && file_exists(base_path($subCategory->image_path))) {
+                File::delete(base_path($subCategory->image_path));
             }
 
             $subCategory->delete();
@@ -242,7 +291,6 @@ class SubcategoryController extends Controller
             ], 500);
         }
     }
-
 
     /**
      * Get subcategories for a specific category.

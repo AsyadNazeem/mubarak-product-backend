@@ -13,6 +13,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
+use Carbon\Carbon;
+use File;
 
 class ProductController extends Controller
 {
@@ -92,14 +94,46 @@ class ProductController extends Controller
             // Handle images upload
             if ($request->hasFile('images')) {
                 $displayOrder = 0;
+                $now = Carbon::now()->format('Ymd_His');
+                $productSlug = Str::slug($request->name);
+
+                // Create directory in Laravel's public folder
+                $publicPath = public_path('ProductImages');
+                if (!File::exists($publicPath)) {
+                    File::makeDirectory($publicPath, 0755, true);
+                }
+
                 foreach ($request->file('images') as $imageFile) {
-                    $path = $imageFile->store('products', 'public');
+                    // Create a filename with product name and timestamp
+                    $filename = "{$productSlug}_{$now}_{$displayOrder}.{$imageFile->extension()}";
+
+                    // Save to public directory
+                    $imageFile->move($publicPath, $filename);
+
+                    // Save the relative path in the database that will be used by frontend
+                    $relativePath = "ProductImages/{$filename}";
 
                     ProductImage::create([
                         'product_id' => $product->product_id,
-                        'image_path' => $path,
+                        'image_path' => $relativePath,
                         'display_order' => $displayOrder++,
                     ]);
+
+                    // Copy to frontend directory using shell command - only if running in local environment
+                    if (app()->environment('local')) {
+                        try {
+                            $frontendPath = base_path('../frontend/src/assets/ProductImages');
+                            // Create frontend directory if it doesn't exist
+                            if (!File::exists($frontendPath)) {
+                                File::makeDirectory($frontendPath, 0755, true);
+                            }
+                            // Copy the file from public to frontend
+                            File::copy("{$publicPath}/{$filename}", "{$frontendPath}/{$filename}");
+                        } catch (\Exception $e) {
+                            \Log::warning("Could not copy image to frontend: {$e->getMessage()}");
+                            // Continue execution even if the copy fails
+                        }
+                    }
                 }
             }
 
@@ -150,12 +184,6 @@ class ProductController extends Controller
         }
     }
 
-    /**
-     * Generate a new product ID
-     */
-    /**
-     * Generate a new product ID
-     */
     /**
      * Generate a new product ID
      */
@@ -238,28 +266,176 @@ class ProductController extends Controller
     /**
      * Get all categories and subcategories
      */
-    public function getCategories()
+    public function getAllCategories()
     {
-        $categories = Category::all();
-        $subCategories = SubCategory::all();
+        $categories = Category::pluck('name')->toArray();
+
+        // Add "All" as the first option if not already in the list
+        if (!in_array('All', $categories)) {
+            array_unshift($categories, 'All');
+        }
 
         return response()->json([
             'status' => 'success',
-            'categories' => $categories,
-            'sub_categories' => $subCategories
+            'data' => $categories
         ]);
     }
 
     /**
-     * Get subcategories for a specific category
+     * Get products filtered by category
      */
-    public function getSubCategories($categoryId)
+    public function getProducts(Request $request)
     {
-        $subCategories = SubCategory::where('category_id', $categoryId)->get();
+        try {
+            // Get category filter from request, default to showing all products
+            $category = $request->input('category', 'All');
 
-        return response()->json([
-            'status' => 'success',
-            'sub_categories' => $subCategories
-        ]);
+            // Check if requesting featured products only
+            $featured = $request->input('featured');
+
+            // Start with a base query
+            $query = Product::with(['images', 'category', 'subCategory'])
+                ->where('status', 'active');
+
+            // Filter by featured if requested
+            if ($featured !== null) {
+                $query->where('featured', (int)$featured);
+            }
+
+            // Apply category filter if not "All"
+            if ($category !== 'All') {
+                // Join with the categories table to filter by category name
+                $query->whereHas('category', function($q) use ($category) {
+                    $q->where('name', $category);
+                });
+            }
+
+            // Get the products
+            $products = $query->get();
+
+            // Format the response data
+            $formattedProducts = $products->map(function ($product) {
+                // Get the first image or use a placeholder
+                $imagePath = $product->images->first()
+                    ? asset('src/assets/' . $product->images->first()->image_path)
+                    : asset('images/placeholder.jpg');
+
+                return [
+                    'id' => $product->product_id,
+                    'name' => $product->name,
+                    'description' => substr($product->description, 0, 100) . '...', // truncate description
+                    'price' => 'MVR ' . number_format($product->price, 2),
+                    'category' => $product->category ? $product->category->name : 'Uncategorized',
+                    'image' => $imagePath,
+                    'rating' => 4.5, // You can implement actual ratings in the future
+                    'bestseller' => $product->featured, // Using featured as bestseller
+                    'stockQuantity' => $product->stock_quantity
+                ];
+            });
+
+            return response()->json([
+                'status' => 'success',
+                'data' => $formattedProducts
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to fetch products',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Get featured products for homepage
+     */
+    public function getFeaturedProducts()
+    {
+        try {
+            $query = Product::with(['images', 'category', 'subCategory'])
+                ->where('status', 'active')
+                ->where('featured', 1);  // Only get products where featured = 1
+
+            // Get the products
+            $products = $query->get();
+
+            // Format the response data
+            $formattedProducts = $products->map(function ($product) {
+                // Get the first image or use a placeholder
+                $imagePath = $product->images->first()
+                    ? asset('src/assets/' . $product->images->first()->image_path)
+                    : asset('images/placeholder.jpg');
+
+                return [
+                    'id' => $product->product_id,
+                    'name' => $product->name,
+                    'description' => substr($product->description, 0, 100) . '...', // truncate description
+                    'price' => 'MVR ' . number_format($product->price, 2),
+                    'category' => $product->category ? $product->category->name : 'Uncategorized',
+                    'image' => $imagePath,
+                    'rating' => 4.5, // You can implement actual ratings in the future
+                    'bestseller' => true, // These are featured products
+                    'stockQuantity' => $product->stock_quantity
+                ];
+            });
+
+            return response()->json([
+                'status' => 'success',
+                'data' => $formattedProducts
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to fetch featured products',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Manually copy images to frontend directory
+     *
+     * @param Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function syncImagesToFrontend(Request $request)
+    {
+        try {
+            $sourceDir = public_path('ProductImages');
+            $targetDir = $request->input('frontendPath', base_path('../frontend/src/assets/ProductImages'));
+
+            // Create target directory if it doesn't exist
+            if (!File::exists($targetDir)) {
+                File::makeDirectory($targetDir, 0755, true);
+            }
+
+            // Get all files from source directory
+            $files = File::files($sourceDir);
+            $copiedCount = 0;
+
+            foreach ($files as $file) {
+                $filename = basename($file);
+                $targetPath = "{$targetDir}/{$filename}";
+
+                // Copy file if it doesn't exist in target directory
+                if (!File::exists($targetPath)) {
+                    File::copy($file, $targetPath);
+                    $copiedCount++;
+                }
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'message' => "{$copiedCount} images synchronized to frontend",
+                'source' => $sourceDir,
+                'target' => $targetDir
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to sync images to frontend',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 }
